@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#set -euo pipefail
+
+(( $# >= 2 )) || { echo "Usage: $0 /path/to/artwork_hierarchy /path/to/m4a_hierarchy" >&2; exit 1; }
+
+ARTWORK_DIR="$1"
+M4A_DIR="$2"
+
+normalize() {
+    local s="$1"
+    # lowercase (portable)
+    s="$(echo "$s" | tr '[:upper:]' '[:lower:]')"
+    # remove accents using iconv (UTF-8 → ASCII//TRANSLIT)
+    #s="$(echo "$s" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$s")"
+    # replace all non-alphanumeric with underscores
+    #s="$(echo "$s" | sed 's/[^a-z0-9]/_/g')"
+    # collapse multiple underscores
+    s="$(echo "$s" | tr -s '_')"
+    # trim leading/trailing underscores
+    s="$(echo "$s" | sed 's/^_//;s/_$//')"
+    # 3. Remove common noise words and punctuation that varies
+    s="$(echo "$s" | sed -E 's/\b(deluxe|remastered|edition|version|vol\.|volume)\b//g')"
+    # limit to 20 characters
+    s="Album_${s:0:10}"
+    echo "$s"
+}
+
+declare -A DEST_ALBUMS
+while IFS= read -r -d '' first_m4a; do
+  dir="$(dirname "$first_m4a")"
+  album="$(basename "$dir")"
+  norm="$(normalize "$album")"
+  echo "Adding file ${first_m4a} to the todo list"
+  DEST_ALBUMS["$norm"]="$first_m4a"
+done < <(find "$M4A_DIR" -type f -iname '01*.m4a' -print0| gshuf -z) # with shuffle)
+
+# Track which albums got artwork
+declare -A DONE
+
+while IFS= read -r -d '' jpg; do
+  album_dir="$(basename "$(dirname "$jpg")")"
+  norm_album="$(normalize "$album_dir")"
+  
+  # --- MODIFICATION FOR LOOSER MATCHING ---
+  match_found=0
+  for dest_norm in "${!DEST_ALBUMS[@]}"; do
+    # Check if the source name is a substring of the destination, OR vice-versa
+    if [[ "$dest_norm" == *"$norm_album"* || "$norm_album" == *"$dest_norm"* ]]; then
+      
+      target="${DEST_ALBUMS[$dest_norm]}"
+      
+      # Check if we already processed this matched album
+      if [[ -n "${DONE[$dest_norm]:-}" ]]; then
+          continue
+      fi
+
+      # Check if the target file itself already has artwork
+      if AtomicParsley "$target" -t | grep -q 'cover'; then
+          echo "⤵️ Skipping $target — already has artwork."
+      else
+          if AtomicParsley "$target" --artwork "$jpg" --overWrite >/dev/null; then
+              echo "✅ Embedded artwork (loose match): '$album_dir' -> '$(basename "$(dirname "$target")")'"
+          else
+              echo "⚠️ Failed to embed artwork for $target, skipping."
+          fi
+      fi
+      
+      DONE["$dest_norm"]=1
+      match_found=1
+      break # Exit the inner loop once we find the first match
+    fi
+  done
+  # --- END MODIFICATION ---
+
+  if [[ "$match_found" -eq 0 ]]; then
+      echo "❓ No match found for source artwork in: '$album_dir' (normalized to '$norm_album')"
+  fi
+done < <(find "$ARTWORK_DIR" -type f \( -iname '*.jpg' -or -iname '*.png' \) -print0 | gshuf -z)
