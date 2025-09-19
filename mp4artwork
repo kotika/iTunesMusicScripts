@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+#set -euo pipefail
+
+(( $# >= 2 )) || { echo "Usage: $0 /path/to/artwork_hierarchy /path/to/m4a_hierarchy" >&2; exit 1; }
+
+ARTWORK_DIR="$1"
+M4A_DIR="$2"
+
+normalize() {
+    local s="$1"
+    # lowercase (portable)
+    s="$(echo "$s" | tr '[:upper:]' '[:lower:]')"
+    # remove accents using iconv (UTF-8 → ASCII//TRANSLIT)
+    s="$(echo "$s" | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null || echo "$s")"
+    # replace all non-alphanumeric with underscores
+    s="$(echo "$s" | sed 's/[^a-z0-9]/_/g')"
+    # collapse multiple underscores
+    s="$(echo "$s" | tr -s '_')"
+    # trim leading/trailing underscores
+    s="$(echo "$s" | sed 's/^_//;s/_$//')"
+    # limit to 20 characters
+    s="Album_${s:0:20}"
+    echo "$s"
+}
+
+declare -A DEST_ALBUMS
+while IFS= read -r -d '' first_m4a; do
+  dir="$(dirname "$first_m4a")"
+  album="$(basename "$dir")"
+  norm="$(normalize "$album")"
+  echo "Adding ${first_m4a} to the todo list"
+  DEST_ALBUMS["$norm"]="$first_m4a"
+done < <(find "$M4A_DIR" -type f -iname '01*.m4a' -print0| gshuf -z) # with shuffle)
+
+# Track which albums got artwork
+declare -A DONE
+
+while IFS= read -r -d '' jpg; do
+  album_dir="$(basename "$(dirname "$jpg")")"
+  norm_album="$(normalize "$album_dir")"
+    echo "Adding ${norm_album} to the todo list"
+  if [[ -n "${DEST_ALBUMS[$norm_album]:-}" ]]; then
+    target="${DEST_ALBUMS[$norm_album]}"
+    # Check if the target already has artwork
+    has_artwork=$(AtomicParsley "$target" -t | grep -i 'Artwork' || true)
+    if [[ -n "$has_artwork" ]]; then
+        echo "✅ Skipping $target — already has artwork."
+    else
+        if AtomicParsley "$target" --artwork "$jpg" --overWrite; then
+        echo "✅ Embedding artwork: $jpg -> $target"
+        else
+        echo "⚠️ Failed to embed artwork for $target, skipping."
+        fi
+    fi
+    DONE["$norm_album"]=1
+  fi
+done < <(find "$ARTWORK_DIR" -type f \( -iname '*.jpg'  -or -iname '*.png' \) -print0| gshuf -z)
+
+
+#    Got it. Here’s a straight-shooting Bash script that does what you want:
+#    	•	Walks a source hierarchy, finds folder.jpg.
+#    	•	For each, grabs the enclosing directory name.
+#    	•	Looks for an .m4a in the target hierarchy with a matching (or close) directory name.
+#    	•	Embeds the artwork with AtomicParsley (the right tool for M4A tagging).
+#    Notes
+#    	•	This script is brute force: it checks every .m4a for every folder.jpg. Good for correctness, but slow if you’ve got thousands of files. If speed matters, index the directories once into an associative array.
+#    	•	The normalize() step keeps it simple—lowercase, replace spaces with underscores, strip weird chars. That usually makes “similar names” line up. If you want fuzzy matching (Levenshtein, etc.), you’ll need awk/perl or a Python helper.
+#    	•	AtomicParsley is the workhorse. It rewrites the M4A in place with --overWrite.
+#    	
+#    	the destination has directories that have same or similar names, but pasting must be done into the m4a file that begins with 01*
+#    	Perfect — that’s the missing constraint. You only want to embed the folder.jpg into the 01*.m4a file of the matching album directory, not into every file. That simplifies targeting. Here’s a leaner, smarter version of the script:
+#    	•	Only indexes the first track (01*.m4a) in each target album dir.
+#    	•	Matches folder.jpg by normalized album name → target’s normalized album dir name.
+#    	•	Embeds artwork only into that 01*.m4a file.
+#    	•	A DONE array to mark which albums already got a folder.jpg.
+#    	•	At the end, loops through untouched albums, prompts the user, and if yes → runs AtomicParsley --extractPix and renames the result to folder.jpg.
+#    	Perfect — we can make it smart: only embed if the 01*.m4a doesn’t already have artwork. AtomicParsley can list metadata, including artwork.
+#       Instead of passing the full path directly, copy or symlink the file to /tmp with a short name:

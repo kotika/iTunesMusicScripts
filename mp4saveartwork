@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#set -euo pipefail
+
+(( $# >= 1 )) || { echo "Usage: $0 /path/to/m4a_hierarchy" >&2; exit 1; }
+
+M4A_DIR="$1"
+
+# Traverse each album directory
+find "$M4A_DIR" -type f \( -iname '01*.m4a' -o -iname '01*.mp3' \) -print0 | gshuf -z | while IFS= read -r -d '' m4a; do
+    dir="$(dirname "$m4a")"
+    folder_jpg="$dir/folder.jpg"
+
+    # Skip if folder.jpg already exists
+    if [[ -f "$folder_jpg" || -f "$dir/folder.png" ]]; then
+        echo "⤵️ Skipping $(basename "$dir") — folder.jpg already exists."
+        continue
+    fi
+
+    echo "No folder.jpg in $(basename "$dir")"
+    #read -rp "Do you want to save artwork from $(basename "$m4a") to $folder_jpg? [y/N] " ans
+    ans=y
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+        # Extract artwork (AtomicParsley names it *.artwork.jpg)
+        AtomicParsley "$m4a" --extractPix
+        extracted="$(ls "$dir"/*artwork* 2>/dev/null | head -n1 || true)"
+        if [[ -n "$extracted" ]]; then
+            mv "$extracted" "$folder_jpg"
+            echo "✅ Saved artwork to $folder_jpg"
+        else
+            echo "⚠️ No embedded artwork found in $m4a"
+            ffmpeg -y -i "$m4a" -an -vcodec copy "$dir/artwork.jpg" 2>/dev/null
+            if [[ -f "$dir/artwork.jpg" ]]; then
+            mv "$dir/artwork.jpg" "$folder_jpg"
+            echo "✅ Saved artwork to $folder_jpg with ffmpeg"
+            fi
+        fi
+    fi
+done
