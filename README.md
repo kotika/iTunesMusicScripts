@@ -7,7 +7,7 @@ A couple of specialized iTunes/Music scripts that I used to
 Usage is:
 
   mp4saveartwork ~/Music
-  mp4artwork ~/Music /path/to/newcollection
+  mp4moveartwork ~/Music /path/to/newcollection
 
 Requirements:
 
